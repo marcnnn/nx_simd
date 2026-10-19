@@ -1,6 +1,6 @@
-defmodule ExHdl.SIMDCompilerTest do
+defmodule NxSimd.CompilerTest do
   @moduledoc """
-  ExHdl.SIMD.Compiler (generated C++) against the Nx evaluator: bit-identical
+  NxSimd.Compiler (generated C++) against the Nx evaluator: bit-identical
   for every supported operation, with broadcasting, views and reductions;
   refuses graphs that may overflow; falls back for floats.
   """
@@ -58,7 +58,7 @@ defmodule ExHdl.SIMDCompilerTest do
 
   defp both(fun, args) do
     ref = apply(fun, args)
-    got = apply(Nx.Defn.jit(fun, compiler: ExHdl.SIMD.Compiler, fallback: false), args)
+    got = apply(Nx.Defn.jit(fun, compiler: NxSimd.Compiler, fallback: false), args)
     assert flat(got) == flat(ref)
   end
 
@@ -106,9 +106,9 @@ defmodule ExHdl.SIMDCompilerTest do
   defn overflowing(a, b), do: a * b
 
   test "graphs that may overflow are refused, not silently wrapped" do
-    jit = Nx.Defn.jit(&overflowing/2, compiler: ExHdl.SIMD.Compiler)
+    jit = Nx.Defn.jit(&overflowing/2, compiler: NxSimd.Compiler)
 
-    assert_raise ExHdl.DSP.RangeError, ~r/multiply needs/, fn ->
+    assert_raise NxFixed.RangeError, ~r/multiply needs/, fn ->
       jit.(Nx.s16(300), Nx.s16(300))
     end
   end
@@ -118,11 +118,11 @@ defmodule ExHdl.SIMDCompilerTest do
   test "float graphs fall back to the evaluator, or raise with fallback: false" do
     x = Nx.tensor([0.0, 1.0], type: :f32)
 
-    assert Nx.Defn.jit(&float_graph/1, compiler: ExHdl.SIMD.Compiler).(x) |> Nx.to_list() ==
+    assert Nx.Defn.jit(&float_graph/1, compiler: NxSimd.Compiler).(x) |> Nx.to_list() ==
              float_graph(x) |> Nx.to_list()
 
-    assert_raise ExHdl.SIMD.Codegen.Unsupported, fn ->
-      Nx.Defn.jit(&float_graph/1, compiler: ExHdl.SIMD.Compiler, fallback: false).(x)
+    assert_raise NxSimd.Codegen.Unsupported, fn ->
+      Nx.Defn.jit(&float_graph/1, compiler: NxSimd.Compiler, fallback: false).(x)
     end
   end
 end

@@ -1,8 +1,8 @@
-defmodule ExHdl.ML.Quantized do
+defmodule NxSimd.Quantized do
   @moduledoc """
   Quantized (int8) neural network building blocks with TensorFlow Lite
   semantics, written as `defn` so they run on the Nx evaluator, EXLA or
-  `ExHdl.SIMD.Compiler` with identical bits.
+  `NxSimd.Compiler` with identical bits.
 
   Follows the TFLite int8 quantization spec: activations int8 per tensor
   with a zero point, weights int8 per output channel (zero point 0,
@@ -138,7 +138,7 @@ defmodule ExHdl.ML.Quantized do
 
   @doc """
   TFLite `MultiplyByQuantizedMultiplier` (default double rounding). Shifts
-  above 0 shift the accumulator left first; `ExHdl.Passes.WidthCheck`
+  above 0 shift the accumulator left first; `NxFixed.WidthCheck`
   rejects the graph if that could wrap.
   """
   deftransform multiply_by_quantized_multiplier(acc, multiplier, shift) do

@@ -1,15 +1,15 @@
-defmodule ExHdl.SIMD.Compiler do
+defmodule NxSimd.Compiler do
   @moduledoc """
   `Nx.Defn.Compiler` that turns integer `defn` graphs into native code.
 
-      Nx.Defn.jit(&MyModel.layer/2, compiler: ExHdl.SIMD.Compiler).(x)
+      Nx.Defn.jit(&MyModel.layer/2, compiler: NxSimd.Compiler).(x)
 
   Steps per new combination of function and argument shapes/types:
 
-    1. Build the `ExHdl.IR.Dataflow` graph and run `ExHdl.Passes.WidthCheck`.
-       Possible overflow raises `ExHdl.DSP.RangeError`: the generated code
+    1. Build the `NxFixed.Dataflow` graph and run `NxFixed.WidthCheck`.
+       Possible overflow raises `NxFixed.RangeError`: the generated code
        is only exact (and free of undefined behaviour) for proven graphs.
-    2. Generate C++ (`ExHdl.SIMD.Codegen`), compile it with the host C++
+    2. Generate C++ (`NxSimd.Codegen`), compile it with the host C++
        compiler (`-O3 -march=native -fopenmp-simd`) into a shared library,
        cached by content hash, and load it into the SIMD NIF.
     3. Run: inputs are passed as binaries, outputs come back as binaries.
@@ -24,9 +24,9 @@ defmodule ExHdl.SIMD.Compiler do
   @behaviour Nx.Defn.Compiler
 
   require Logger
-  alias ExHdl.IR.Dataflow
-  alias ExHdl.Passes.WidthCheck
-  alias ExHdl.SIMD.{Codegen, NIF}
+  alias NxFixed.Dataflow
+  alias NxFixed.WidthCheck
+  alias NxSimd.{Codegen, NIF}
 
   @own [:param_ranges, :case_split, :split_threshold, :split_budget, :fallback, :cxx, :cxxflags]
   @default_flags ~w(-O3 -march=native -std=c++20 -fopenmp-simd -fPIC -shared -fno-math-errno)
@@ -66,7 +66,7 @@ defmodule ExHdl.SIMD.Compiler do
 
       {:fallback, reason} ->
         if Keyword.get(own, :fallback, true) == false, do: raise(Codegen.Unsupported, reason)
-        Logger.debug("ExHdl.SIMD.Compiler: falling back to Nx.Defn.Evaluator (#{reason})")
+        Logger.debug("NxSimd.Compiler: falling back to Nx.Defn.Evaluator (#{reason})")
         Nx.Defn.Evaluator.__compile__(key, vars, fun, rest)
     end
   end
@@ -79,7 +79,7 @@ defmodule ExHdl.SIMD.Compiler do
 
   @impl true
   def __shard_jit__(_key, _mesh, _vars, _fun, _args_list, _opts),
-    do: raise("sharding is not supported by ExHdl.SIMD.Compiler")
+    do: raise("sharding is not supported by NxSimd.Compiler")
 
   @doc "The generated C++ for a traced output (for inspection and tests)."
   def source(output, opts \\ []) do
@@ -89,7 +89,7 @@ defmodule ExHdl.SIMD.Compiler do
 
   defp build(output, own) do
     with {:ok, _graph, meta} <- generate(output, own),
-         true <- ExHdl.SIMD.available?() || {:fallback, "the SIMD NIF is not loaded"} do
+         true <- NxSimd.available?() || {:fallback, "the SIMD NIF is not loaded"} do
       {:ok, load(meta.source, own), meta}
     end
   end
@@ -109,8 +109,8 @@ defmodule ExHdl.SIMD.Compiler do
         {:fallback, "floating point (the generator handles integer graphs)"}
 
       violations != [] ->
-        raise ExHdl.DSP.RangeError,
-          message: WidthCheck.format(graph, violations, "ExHdl.SIMD.Compiler"),
+        raise NxFixed.RangeError,
+          message: WidthCheck.format(graph, violations, "NxSimd.Compiler"),
           graph: graph,
           violations: violations
 
@@ -166,7 +166,7 @@ defmodule ExHdl.SIMD.Compiler do
           File.rename!(tmp <> ".cc", Path.join(dir, "#{hash}.cc"))
 
         {log, status} ->
-          raise "ExHdl.SIMD.Compiler: #{cxx} exited with #{status}:\n#{log}\nsource: #{tmp}.cc"
+          raise "NxSimd.Compiler: #{cxx} exited with #{status}:\n#{log}\nsource: #{tmp}.cc"
       end
     end
 
@@ -175,8 +175,8 @@ defmodule ExHdl.SIMD.Compiler do
 
   defp cache_dir do
     if Code.ensure_loaded?(Mix.Project) and Mix.Project.get(),
-      do: Path.join(Mix.Project.build_path(), "ex_hdl_jit"),
-      else: Path.join(System.tmp_dir!(), "ex_hdl_jit")
+      do: Path.join(Mix.Project.build_path(), "nx_simd_jit"),
+      else: Path.join(System.tmp_dir!(), "nx_simd_jit")
   end
 
   # Nx calls the compiled function with a list of lazy parameter lists.

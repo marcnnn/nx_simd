@@ -1,6 +1,6 @@
 # int8 fully connected layer per backend.
 #   MIX_ENV=test mix run scripts/bench_ml.exs [batch] [in] [out]
-alias ExHdl.ML.Quantized, as: Q
+alias NxSimd.Quantized, as: Q
 [batch, inputs, outputs] =
   case System.argv() do
     [b, i, o] -> Enum.map([b, i, o], &String.to_integer/1)
@@ -32,10 +32,10 @@ IO.puts("fully connected #{batch}x#{inputs} -> #{outputs} (#{macs} MACs)")
 # Nx.Defn.compile fixes the parameters at compile time: no per-call cache
 # lookup (Nx.Defn.jit hashes the captured parameters on every call).
 template = Nx.template({batch, inputs}, :s8)
-simd = Nx.Defn.compile(&Q.fully_connected/2, [template, params], compiler: ExHdl.SIMD.Compiler, fallback: false)
+simd = Nx.Defn.compile(&Q.fully_connected/2, [template, params], compiler: NxSimd.Compiler, fallback: false)
 exla = Nx.Defn.compile(&Q.fully_connected/2, [template, params], compiler: EXLA)
 xe = Nx.backend_transfer(x, EXLA.Backend)
-a = time.("ExHdl.SIMD.Compiler", fn -> simd.(x) end)
+a = time.("NxSimd.Compiler", fn -> simd.(x) end)
 b = time.("EXLA (inputs on EXLA)", fn -> exla.(xe) end)
 c = if macs <= 300_000, do: time.("Nx evaluator", fn -> Q.fully_connected(x, params) end), else: Q.fully_connected(x, params)
 IO.puts("identical: #{Nx.to_list(a) == Nx.to_list(Nx.backend_copy(b)) and Nx.to_list(a) == Nx.to_list(c)}")
