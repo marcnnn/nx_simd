@@ -8,6 +8,7 @@ for fixed-point formats:
 | Per-sample Nx evaluator | `ExHdl.DSP.run_scan/5` | reference, debugging |
 | Compiled block loop (EXLA) | `ExHdl.DSP.run_scan_stacked/5` | any block and format |
 | Highway SIMD NIF | `ExHdl.CPU.run_block/5`, `ExHdl.SIMD` | Q15 DDC, FIR, one-pole |
+| Generated native code | `ExHdl.SIMD.Compiler` (`Nx.Defn.Compiler`) | any integer `defn`, e.g. quantized ML layers |
 
 `ExHdl.CPU.run_block/5` picks the SIMD kernels where they cover the block
 and format and falls back to the compiled loop otherwise.
@@ -60,6 +61,63 @@ in one EXLA `while` loop is bit-identical and needs no per-kernel work. Two
 details matter: arguments must already live on `EXLA.Backend` (jit with
 BinaryBackend arguments was about 5x slower) and the width check is cached
 per kernel and argument types.
+
+## Generated code: `ExHdl.SIMD.Compiler`
+
+`Nx.Defn.jit(fun, compiler: ExHdl.SIMD.Compiler)` turns integer `defn`
+graphs into native code instead of hand-written kernels:
+
+1. `ExHdl.Passes.WidthCheck` must accept the graph; possible overflow
+   raises (the generated C++ is only exact, and free of undefined
+   behaviour, for proven graphs). Floats fall back to the evaluator.
+2. `ExHdl.SIMD.Codegen` emits C++: parameters, constants, `dot`/`sum`
+   results and outputs are buffers; elementwise operations, casts, views
+   (`broadcast`, `reshape`, `transpose`, `slice`, `concatenate`) and table
+   lookups are fused into the loop that computes the next buffer.
+3. The host compiler builds it (`-O3 -march=native`), cached by content
+   hash, and the SIMD NIF loads it with `dlopen`. The finished runner is
+   cached per function, argument types and options.
+
+The split follows established practice (TVM/LLVM style): generated loops,
+vectorised by the C++ compiler. What made the difference in practice:
+
+- **Storage narrowing from ranges:** Nx folds `as_type` into constants, so
+  int8 weights arrive as s32; constants are stored in the narrowest type
+  their values fit (4x less memory traffic, and the int8 pattern stays
+  visible to the compiler).
+- **Signed accumulators where the types prove no overflow** (e.g. K int8 x
+  int8 products for K < 2^17), unsigned modular accumulation otherwise.
+- **No `#pragma omp simd reduction` on integer dot products:** the OpenMP
+  rewrite hides the dot-product idiom; without it GCC emits `sdot`
+  (16 int8 multiply-accumulates per instruction on Armv8.2+).
+- **Parameters as tensors, compiled with `Nx.Defn.compile`:** `Nx.Defn.jit`
+  keys its cache on the closure, i.e. hashes captured parameters on every
+  call (900 us for a 32k-element weight list; EXLA pays the same).
+
+### Quantized ML: `ExHdl.ML.Quantized`
+
+int8 fully connected layer with TensorFlow Lite semantics (per-channel
+weights, `QuantizeMultiplier`, gemmlowp double rounding with ties away
+from zero, zero point folded into the bias as in TFLite's optimised
+kernels). Verified against TFLite reference values worked out from the
+sources, bit-identical across evaluator, EXLA and generated code, and
+within 1 LSB of a float reference.
+
+Neoverse-N1, `MIX_ENV=test mix run scripts/bench_ml.exs batch in out`:
+
+| Layer (int8) | Generated code | EXLA | Nx evaluator |
+|---|---|---|---|
+| 64x256 -> 128 | 0.23-0.70 ms | 0.97-1.81 ms | |
+| 1x1024 -> 1024 | 0.24 ms | 0.90 ms | |
+| 128x512 -> 256 | 2.1 ms (7.9 GMAC/s) | 3.0 ms | |
+| 16x64 -> 32 | 0.033 ms | 0.46 ms | 11.3 ms |
+
+Pitfall found on the way: `Nx.tensor(2147483648)` is `-2147483648`
+(integer literals default to s32 and wrap silently); constants of 2^31 and
+above must be created with an explicit `:s64` type.
+
+On the Zynq (no compiler on the target) the generated sources would be
+cross-compiled ahead of time; not implemented yet.
 
 ## Building
 
