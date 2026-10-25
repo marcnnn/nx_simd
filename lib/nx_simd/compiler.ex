@@ -18,8 +18,10 @@ defmodule NxSimd.Compiler do
   on `Nx.Defn.Evaluator` instead, unless `fallback: false` is given.
 
   Options: `:fallback` (default `true`), `:cxx` (default `$CXX` or `c++`),
-  `:cxxflags` (replaces the default flags), plus the width-check options
-  (`:param_ranges`, ...).
+  `:cxxflags` (replaces the default flags), `:threads` (default 1: with more,
+  the kernel runs its large loops on that many OpenMP threads and is built
+  with `-fopenmp`; keep it below the free cores, since threads wait for each
+  other at barriers), plus the width-check options (`:param_ranges`, ...).
   """
   @behaviour Nx.Defn.Compiler
 
@@ -28,8 +30,17 @@ defmodule NxSimd.Compiler do
   alias NxFixed.WidthCheck
   alias NxSimd.{Codegen, NIF}
 
-  @own [:param_ranges, :case_split, :split_threshold, :split_budget, :fallback, :cxx, :cxxflags]
-  @default_flags ~w(-O3 -march=native -std=c++20 -fopenmp-simd -fPIC -shared -fno-math-errno)
+  @own [
+    :param_ranges,
+    :case_split,
+    :split_threshold,
+    :split_budget,
+    :fallback,
+    :cxx,
+    :cxxflags,
+    :threads
+  ]
+  @default_flags ~w(-O3 -march=native -std=c++20 -fPIC -shared -fno-math-errno)
 
   @impl true
   def __jit__(key, vars, fun, args_list, opts), do: __compile__(key, vars, fun, opts).(args_list)
@@ -116,7 +127,7 @@ defmodule NxSimd.Compiler do
 
       true ->
         try do
-          meta = Codegen.generate(graph)
+          meta = Codegen.generate(graph, threads: Keyword.get(own, :threads, 1))
 
           params =
             for id <- graph.order, graph.nodes[id].op == :parameter, do: graph.nodes[id].attrs
@@ -133,7 +144,12 @@ defmodule NxSimd.Compiler do
   # Compiles (once per source, flags and compiler) and loads (once per VM).
   defp load(source, own) do
     cxx = Keyword.get_lazy(own, :cxx, fn -> System.get_env("CXX") || "c++" end)
-    flags = Keyword.get(own, :cxxflags, @default_flags)
+    threads = Keyword.get(own, :threads, 1)
+
+    flags =
+      Keyword.get_lazy(own, :cxxflags, fn ->
+        @default_flags ++ [if(threads > 1, do: "-fopenmp", else: "-fopenmp-simd")]
+      end)
 
     hash =
       :crypto.hash(:sha256, [source, 0, cxx, 0, Enum.join(flags, " ")])

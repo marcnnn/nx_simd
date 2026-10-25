@@ -50,16 +50,60 @@ defmodule NxSimd.CompilerTest do
      Nx.remainder(Nx.as_type(x, :s64), -5)}
   end
 
+  defn gather_computed(a, i) do
+    # a: s16[3][4], i: u8[6]; the table is computed and reshaped
+    table = (Nx.as_type(a, :s32) * 3 - 1) |> Nx.reshape({12})
+    Nx.take(table, Nx.clip(Nx.as_type(i, :s32), 0, 11))
+  end
+
   defn unsigned(a, k) do
     # a: u16[4], k: u8 shift amounts
     {Nx.left_shift(Nx.as_type(a, :u32), Nx.bitwise_and(k, 7)),
      Nx.right_shift(a, Nx.bitwise_and(k, 7)), a == 7}
   end
 
-  defp both(fun, args) do
+  defn narrowing(a, b, p) do
+    # a, b: s16[5], p: u32[5]. The s64 chain is masked to 32 bits (so the
+    # generator may compute it in 32 bits), then used exactly (select, shifts).
+    w = Nx.as_type(a, :s64) * Nx.as_type(p, :s64) + Nx.as_type(b, :s64)
+    low = Nx.bitwise_and(w, Nx.s64(0xFFFFFFFF))
+    hi = Nx.right_shift(low, 16)
+    m = Nx.bitwise_and(w * 3 - 5, 0xFFF)
+    sel = Nx.select(a > b, Nx.as_type(hi, :s32) - 7, Nx.negate(Nx.as_type(m, :s32)))
+
+    {low, hi, m, sel, Nx.left_shift(Nx.as_type(m, :s32), 4), Nx.right_shift(w, 20),
+     Nx.min(Nx.as_type(low, :s64), w)}
+  end
+
+  defn staged(a, b, table) do
+    # a, b: s16[64][128], table: s16[1024]: dependent loops over buffers that
+    # the generator splits across threads (concatenations are buffers), a
+    # table lookup and a reduction
+    x = Nx.as_type(a, :s32) + Nx.as_type(b, :s32) * 2
+    c1 = Nx.concatenate([x, x + 1], axis: 0)
+    c2 = Nx.concatenate([c1 * 3, c1 - 5], axis: 1)
+    c3 = Nx.concatenate([Nx.right_shift(c2, 1), c2], axis: 0)
+    g = Nx.take(table, Nx.bitwise_and(Nx.as_type(c3, :s32), 1023))
+    {c3, Nx.sum(c3, axes: [0]), Nx.transpose(g)}
+  end
+
+  defp both(fun, args, opts \\ []) do
     ref = apply(fun, args)
-    got = apply(Nx.Defn.jit(fun, compiler: NxSimd.Compiler, fallback: false), args)
-    assert flat(got) == flat(ref)
+    jit = Nx.Defn.jit(fun, [compiler: NxSimd.Compiler, fallback: false] ++ opts)
+    assert flat(apply(jit, args)) == flat(ref)
+  end
+
+  defp pseudo_random(shape, type, seed) do
+    {lo, hi} = NxFixed.WidthCheck.type_range(type)
+    n = Tuple.product(shape)
+
+    Nx.iota({n}, type: :s64)
+    |> Nx.multiply(7919)
+    |> Nx.add(seed)
+    |> Nx.remainder(hi - lo + 1)
+    |> Nx.add(lo)
+    |> Nx.as_type(type)
+    |> Nx.reshape(shape)
   end
 
   defp flat(container),
@@ -99,8 +143,31 @@ defmodule NxSimd.CompilerTest do
       both(&reductions/1, [a])
       both(&dots/3, [a8, b8, v8])
       both(&lookup_and_division/2, [i, x])
+      both(&gather_computed/2, [a, i])
       both(&unsigned/2, [u, k])
     end
+  end
+
+  property "ring chains computed at narrower widths are exact" do
+    check all a <- ints({:s, 16}, {5}),
+              b <- ints({:s, 16}, {5}),
+              p <- ints({:u, 32}, {5}),
+              max_runs: 40 do
+      both(&narrowing/3, [a, b, p])
+    end
+  end
+
+  test "threaded kernels give the same result as single-threaded ones" do
+    a = pseudo_random({64, 128}, {:s, 16}, 1)
+    b = pseudo_random({64, 128}, {:s, 16}, 5)
+
+    table = pseudo_random({1024}, {:s, 16}, 9)
+
+    for threads <- [1, 2, 3, 4], do: both(&staged/3, [a, b, table], threads: threads)
+
+    expr = Nx.Defn.debug_expr(&staged/3).(a, b, table)
+    refute NxSimd.Compiler.source(expr, threads: 1) =~ "omp parallel"
+    assert NxSimd.Compiler.source(expr, threads: 4) =~ "omp parallel"
   end
 
   defn overflowing(a, b), do: a * b
