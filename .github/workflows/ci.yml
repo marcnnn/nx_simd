@@ -9,8 +9,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      # sibling libraries are path dependencies until they are on Hex
-      - run: ./scripts/checkout_siblings.sh
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "27.3"

@@ -10,7 +10,7 @@ TensorFlow Lite semantics.
 Nx.Defn.jit(&MyModel.layer/3, compiler: NxSimd.Compiler).(x, w, b)
 ```
 
-Every graph must pass [nx_fixed](../nx_fixed)'s width check first: the
+Every graph must pass [nx_fixed](https://github.com/marcnnn/nx_fixed)'s width check first: the
 generated code is exact (and free of undefined behaviour) only for graphs
 whose values provably fit their types. The same range information picks
 accumulator types and narrows constant storage. Float graphs fall back to
